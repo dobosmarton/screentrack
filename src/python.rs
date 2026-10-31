@@ -241,6 +241,7 @@ impl PyTracker {
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    module.add("__debug_build__", cfg!(debug_assertions))?;
     module.add_function(wrap_pyfunction!(rgb_mean_std, module)?)?;
     module.add_class::<PyConfig>()?;
     module.add_class::<PyTracker>()?;

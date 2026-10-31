@@ -3,8 +3,9 @@ from typing import Literal, TypeAlias, final
 import numpy as np
 from numpy.typing import NDArray
 
-__all__ = ["Config", "Tracker", "__version__", "rgb_mean_std"]
+__all__ = ["Config", "Tracker", "__debug_build__", "__version__", "rgb_mean_std"]
 
+__debug_build__: bool
 __version__: str
 
 _Motion: TypeAlias = Literal["stable", "reset"] | tuple[Literal["pan"], float, float]
