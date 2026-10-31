@@ -10,7 +10,7 @@ A Rust library (with Python bindings) that gives stable identities to objects de
 
 ### Goals
 
-1. **Performance.** Bring temporal association well under the arena's 20 ms p95 perception budget. At steady state the crowded 60-object case spends 41 ms p50 and 44 ms p95 per frame at the detector's 5 Hz cadence, and 73 ms and 87 ms at 10 Hz (preparation plus association). Target: **≤ 2 ms p95 for 60 objects at 5 Hz steady state, including appearance extraction**, on the dev Mac. Measure separately on the Windows VM.
+1. **Performance.** Bring temporal association well under the arena's 20 ms p95 perception budget. On real game frames at the detector's 5 Hz cadence, the Python tracker spends 64-95 ms p95 per frame at steady state, mostly on appearance extraction. Target: **≤ 2 ms p95 for about 60 objects at 5 Hz steady state, including appearance extraction**, on the dev Mac, measured with the AoE2 repo's `scripts/tracker_benchmark`. Measure separately on the Windows VM.
 2. **Behavioural parity.** Make the same identity decisions as the current Python implementation on every recorded and synthetic sequence (see §6).
 3. **A clean, generic core.** No game names, classes or types in the library. Every tuned value lives in a `Config` struct, and the AoE2 values ship as a named preset.
 4. **Drop-in integration.** The AoE2 agent keeps its current API (`prepare_detections`, `TemporalEntities.observe`) through a thin adapter, behind a switch, so both implementations can run side by side.
@@ -357,4 +357,6 @@ Checked against the reference on Python 3.11.9 and NumPy 2.4.6.
 - **`hypot`.** `f64::hypot` differed from `math.hypot` on 10.7% of inputs, and `sqrt(x² + y²)` on 14.2%. A scalar port of `vector_norm` differed on none of 1,000,000.
 - **`sum()`.** Python's float `sum()` is compensated from 3.12, so fixtures must come from Python 3.11, and Rust uses plain sums.
 - **Reference bugs.** A negative box end wrapped through a Python slice, and an all-zero-confidence vote could raise `ZeroDivisionError`. Both were fixed in the reference (AoE2 commit `4c61753`) to match this spec, and the fixtures come from the fixed version.
+- **Benchmark scene.** The crowded synthetic scene used 64×64 boxes reading 0.25M pixels per frame. Real frames read 2.3M at the median and up to 8.2M, so the Python cost above comes from real frames instead. 219 unique annotated frames were available.
+- **Known behaviour issue.** Parity preserves a weakness of the reference. One duplicate box leaves a stale track on top of an object, every later frame is then ambiguous, and the object gets a new ID each frame. See the README and the AoE2 repo's `docs/tracker-benchmark.md`.
 - **Recorded sequences.** None existed when this was written. Capturing one on the VM is a gate for shadow mode, not for the core port.

@@ -29,14 +29,20 @@ just check   # runs everything CI runs
 
 ## Performance
 
-Crowded 60-object scene at steady state, including signatures and the NumPy round trip through the bindings, in milliseconds per frame on an Apple Silicon Mac:
+Total time per frame at steady state, p95 in milliseconds, including signatures and the conversions the agent pays for. This comes from the AoE2 repo's `scripts/tracker_benchmark`, which uses real annotated game frames and the real detector on an Apple Silicon Mac:
 
-| Cadence | Python p50 / p95 | screentrack p50 / p95 |
-|---|---|---|
-| 5 Hz | 41.33 / 43.82 | 0.85 / 0.90 |
-| 10 Hz | 73.32 / 86.72 | 1.61 / 1.78 |
+| Density band | Python | screentrack | Speedup | Speedup, lower bound |
+|---|---|---|---|---|
+| Low | 64.14 | 1.55 | 43x | 35x |
+| Typical | 95.01 | 1.89 | 50x | 49x |
+| High | 70.68 | 1.86 | 38x | 34x |
+| Peak | 92.94 | 3.11 | 30x | 25x |
 
-Steady state matters: ambiguous tracks survive for a full second, so a crowded scene keeps slowing down for about that long. `just bench` reproduces the screentrack column, and the Python column comes from the AoE2 repo's `scripts/bench_temporal.py`. These figures don't include rebuilding the agent's snapshot objects, which adds about 0.14 ms for 60 objects.
+Signature extraction is most of the cost on real frames, because real boxes are far larger than the crowded benchmark scene in `benches/`. That scene and `just bench` are for catching regressions, not for headline numbers.
+
+## Known issue
+
+screentrack deliberately makes the same decisions as the Python tracker it replaces, including its weakness: a stationary object can lose its identity permanently after one duplicate detection. In the same benchmark, only 18.8% of IDs still named the same object two seconds later, against 88.8% for a simple IoU matcher. Speed is solved; identity quality is not.
 
 ## Parity
 
