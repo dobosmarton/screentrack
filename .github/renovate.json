@@ -1,0 +1,38 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 6am on monday"],
+  "timezone": "Europe/Budapest",
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 5,
+  "dependencyDashboard": true,
+  "pinDigests": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "pre-commit": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "description": "Keep the Rust tool versions in `just setup` current.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^justfile$/"],
+      "matchStrings": ["\\s(?<depName>[a-z0-9-]+)@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "crate"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep the GitHub Actions update stream manageable.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "Group the Rust developer tools.",
+      "matchManagers": ["custom.regex"],
+      "groupName": "rust-tools"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+[package]
+name = "screentrack"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Stable identities for objects detected in screen captures"
+repository = "https://github.com/dobosmarton/screentrack"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.30", features = ["abi3-py311"], optional = true }
+
+[features]
+python = ["dep:pyo3"]
+trace = []
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+
+[lints.rust]
+missing_docs = "warn"
+unreachable_pub = "warn"
+unsafe_code = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[profile.profiling]
+inherits = "release"
+debug = true

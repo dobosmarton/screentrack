@@ -1,0 +1,78 @@
+# Install with `just setup`. `just lint` runs these on every file.
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+exclude: ^fixtures/
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+
+  - repo: https://github.com/tombi-toml/tombi-pre-commit
+    rev: v1.9.8
+    hooks:
+      - id: tombi-format
+        exclude: (Cargo|uv)\.lock$
+      - id: tombi-lint
+        exclude: (Cargo|uv)\.lock$
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.51.1
+    hooks:
+      - id: typos
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.3
+    hooks:
+      - id: ruff-check
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.31.1
+    hooks:
+      - id: zizmor
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: uv-lock
+        name: uv lock --locked
+        entry: uv lock --locked
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --locked --all-targets --all-features
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: cargo-nextest
+        name: cargo nextest
+        entry: cargo nextest run --locked --features trace --no-tests pass
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]

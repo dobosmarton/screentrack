@@ -1,0 +1,21 @@
+# Rust
+/target/
+mutants.out*/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.dylib
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.basedpyright/
+/dist/
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/

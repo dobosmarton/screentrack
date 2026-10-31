@@ -1,0 +1,65 @@
+[project]
+name = "screentrack"
+description = "Stable identities for objects detected in screen captures"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT OR Apache-2.0"
+dependencies = ["numpy>=1.24"]
+dynamic = ["version"]
+
+[dependency-groups]
+dev = [
+  "basedpyright>=1.40",
+  "maturin>=1.16,<2",
+  "mypy>=2.4",
+  "pre-commit>=4.7",
+  "pytest>=9.2",
+]
+
+[build-system]
+requires = ["maturin>=1.16,<2"]
+build-backend = "maturin"
+
+[tool.basedpyright]
+include = ["python", "pytests"]
+pythonVersion = "3.11"
+reportAny = "error"
+reportExplicitAny = "error"
+typeCheckingMode = "standard"
+venv = ".venv"
+venvPath = "."
+
+[tool.maturin]
+features = ["python"]
+module-name = "screentrack._native"
+python-source = "python"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["pytests"]
+
+# Same rules and line length as the AoE2 agent repo.
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["ANN", "B", "C4", "DTZ", "E", "F", "I", "PGH", "PTH", "RET", "RUF", "SIM", "TC", "UP", "W"]
+ignore = ["E501", "SIM108"]
+
+[tool.ruff.lint.per-file-ignores]
+"pytests/**" = ["ANN"]
+
+[tool.ruff.format]
+indent-style = "space"
+quote-style = "double"
+
+[tool.uv]
+# uv only rebuilds a path dependency when these change.
+cache-keys = [
+  { file = "Cargo.lock" },
+  { file = "Cargo.toml" },
+  { file = "pyproject.toml" },
+  { file = "rust-toolchain.toml" },
+  { file = "src/**/*.rs" },
+]

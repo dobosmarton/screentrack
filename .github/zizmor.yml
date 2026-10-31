@@ -1,0 +1,4 @@
+rules:
+  self-repository:
+    # actionlint 1.7.12 rejects the `$/` form, and it only helps a fully pinned org policy.
+    disable: true

@@ -1,0 +1,10 @@
+screentrack
+Copyright (c) 2026 Marton Dobos
+
+src/candidates.rs contains `py_hypot`, a Rust port of the two-argument path of
+`vector_norm` from CPython 3.11 (Modules/mathmodule.c).
+Copyright (c) 2001 Python Software Foundation. All Rights Reserved.
+Used under the PSF License Agreement.
+
+Changes from the original: reduced to exactly two finite arguments, translated
+to Rust, and `frexp`/`ldexp` replaced by an exponent read from the float's bits.

@@ -1,0 +1,13 @@
+# Turns the parity rules in docs/SPEC.md into compile errors.
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+doc-valid-idents = ["NumPy", ".."]
+disallowed-methods = [
+  { path = "f64::algebraic_add", reason = "allows rounding changes" },
+  { path = "f64::algebraic_div", reason = "allows rounding changes" },
+  { path = "f64::algebraic_mul", reason = "allows rounding changes" },
+  { path = "f64::algebraic_sub", reason = "allows rounding changes" },
+  { path = "f64::hypot", reason = "use candidates::py_hypot for CPython parity" },
+  { path = "f64::mul_add", reason = "fused multiply-add changes rounding" },
+  { path = "std::iter::Iterator::max_by", reason = "returns the last maximum; the label vote needs the first" },
+]

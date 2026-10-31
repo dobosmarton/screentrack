@@ -1,0 +1,27 @@
+{
+  "reference_commit": "4c61753a888919c49ec7b57323dabdf5f879b07e",
+  "reference_blob": "0d40316b5431e8e533325e6918f05f6f73e78bc8",
+  "python": "3.11.9",
+  "numpy": "2.4.6",
+  "tracker_sequences": [
+    "ambiguous_crossing",
+    "camera_jump_and_replay_guard",
+    "class_flicker",
+    "crowded_20",
+    "crowded_40",
+    "crowded_60",
+    "drifting_20",
+    "drifting_40",
+    "evidence_window_boundary",
+    "exhaustive_reference",
+    "history_expires",
+    "movement_boundary_large_box",
+    "movement_boundary_small_box",
+    "occlusion",
+    "off_screen_boxes",
+    "pan_preserves_identity",
+    "repeated_label_evidence",
+    "separated_60",
+    "zero_confidence"
+  ]
+}
