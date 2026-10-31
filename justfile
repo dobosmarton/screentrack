@@ -4,7 +4,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 set windows-shell := ["bash", "-euo", "pipefail", "-c"]
 
 aoe2 := env("AOE2_AGENT", "../agent")
-decision_modules := "--file src/candidates.rs --file src/matching.rs --file src/label.rs"
+decision_modules := "--file src/candidates.rs --file src/label.rs --file src/matching.rs --file src/signature.rs --file src/tracker.rs"
 
 # Show available commands.
 default:
@@ -44,7 +44,7 @@ deps:
 
 # Confirm each cargo feature compiles on its own.
 features:
-    cargo hack --locked check --each-feature --no-dev-deps
+    cargo hack --locked check --each-feature
 
 # Build the API docs, failing on any rustdoc warning.
 docs:
@@ -69,8 +69,9 @@ py:
     uv run --no-sync maturin develop --release --uv
 
 # Run the benchmarks against release builds.
-bench:
-    cargo bench --locked --features trace
+bench: py
+    cargo bench --locked
+    uv run --no-sync python scripts/bench_bindings.py
 
 # Check that the tests notice changes to the decision logic.
 mutants:
@@ -83,3 +84,4 @@ coverage:
 # Regenerate fixtures from the frozen AoE2 reference. Set AOE2_AGENT to its checkout.
 fixtures:
     cd "{{ aoe2 }}" && uv run python scripts/export_screentrack_fixtures.py --output "{{ justfile_directory() }}/fixtures"
+    uv run --no-sync python scripts/export_hypot_digest.py

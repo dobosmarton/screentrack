@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   mutants:
-    name: Decision modules
+    name: Core modules
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:

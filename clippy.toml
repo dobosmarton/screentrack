@@ -1,7 +1,7 @@
 # Turns the parity rules in docs/SPEC.md into compile errors.
 allow-expect-in-tests = true
 allow-unwrap-in-tests = true
-doc-valid-idents = ["NumPy", ".."]
+doc-valid-idents = ["CPython", "NumPy", ".."]
 disallowed-methods = [
   { path = "f64::algebraic_add", reason = "allows rounding changes" },
   { path = "f64::algebraic_div", reason = "allows rounding changes" },

@@ -9,13 +9,29 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [lib]
+bench = false
 crate-type = ["cdylib", "rlib"]
 
+[[test]]
+name = "replay"
+required-features = ["trace"]
+
+[[bench]]
+harness = false
+name = "tracker"
+
 [dependencies]
+numpy = { version = "0.30", optional = true }
 pyo3 = { version = "0.30", features = ["abi3-py311"], optional = true }
 
+[dev-dependencies]
+criterion = "0.8"
+proptest = "1.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
 [features]
-python = ["dep:pyo3"]
+python = ["dep:numpy", "dep:pyo3"]
 trace = []
 
 [lints.clippy]

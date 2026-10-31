@@ -1,2 +1,6 @@
 [files]
 extend-exclude = ["fixtures/"]
+
+[default.extend-words]
+# NumPy's real attribute name: `ndarray.flags.writeable`.
+writeable = "writeable"

@@ -1,5 +1,5 @@
 """Stable identities for objects detected in screen captures."""
 
-from ._native import __version__
+from ._native import Config, Tracker, __version__, rgb_mean_std
 
-__all__ = ["__version__"]
+__all__ = ["Config", "Tracker", "__version__", "rgb_mean_std"]

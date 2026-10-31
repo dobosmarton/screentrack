@@ -29,6 +29,12 @@ typeCheckingMode = "standard"
 venv = ".venv"
 venvPath = "."
 
+# Fixture JSON is untyped by nature, so these files still check the API but not `Any`.
+[[tool.basedpyright.executionEnvironments]]
+root = "pytests"
+reportAny = false
+reportExplicitAny = false
+
 [tool.maturin]
 features = ["python"]
 module-name = "screentrack._native"

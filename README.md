@@ -27,6 +27,17 @@ just check   # runs everything CI runs
 | `just coverage` | Reports test coverage |
 | `just fixtures` | Regenerates fixtures from the AoE2 reference (set `AOE2_AGENT` to its checkout) |
 
+## Performance
+
+Crowded 60-object scene at steady state, including signatures and the NumPy round trip through the bindings, in milliseconds per frame on an Apple Silicon Mac:
+
+| Cadence | Python p50 / p95 | screentrack p50 / p95 |
+|---|---|---|
+| 5 Hz | 41.33 / 43.82 | 0.85 / 0.90 |
+| 10 Hz | 73.32 / 86.72 | 1.61 / 1.78 |
+
+Steady state matters: ambiguous tracks survive for a full second, so a crowded scene keeps slowing down for about that long. `just bench` reproduces the screentrack column, and the Python column comes from the AoE2 repo's `scripts/bench_temporal.py`. These figures don't include rebuilding the agent's snapshot objects, which adds about 0.14 ms for 60 objects.
+
 ## Parity
 
 screentrack must make the same identity decisions as the Python tracker it replaces. [docs/SPEC.md](docs/SPEC.md) defines the contract, and `fixtures/` holds golden output from that tracker, generated on Python 3.11. Don't edit fixtures by hand.

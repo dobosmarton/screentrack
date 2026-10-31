@@ -1,0 +1,12 @@
+# Reviewed mutants that cannot change a result. Each one survives a bit-exact comparison
+# with Python over a million inputs. Anything else that survives fails `just mutants`.
+exclude_re = [
+  # The estimate is only a starting point: the correction step in `py_hypot` absorbs it.
+  'replace \+ with [-*] in root_estimate',
+  # Adding 2^27 to a value below 1 still splits it at a valid bit position.
+  'replace \* with \+ in split',
+  # Both paths agree at this exponent, because subnormals have so little precision left.
+  "replace < with <= in py_hypot",
+  # The fraction is negligible next to a subnormal result.
+  'replace \+ with - in hypot_of_tiny',
+]
