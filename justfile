@@ -75,7 +75,7 @@ bench: py
 
 # Check that the tests notice changes to the decision logic.
 mutants:
-    cargo mutants --locked --features trace --test-tool nextest {{ decision_modules }}
+    cargo mutants --cargo-arg=--locked --features trace --test-tool nextest {{ decision_modules }}
 
 # Report test coverage.
 coverage:
