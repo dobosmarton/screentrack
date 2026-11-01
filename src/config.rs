@@ -16,6 +16,8 @@ pub struct Config {
     pub max_appearance_distance: f64,
     /// Cost difference below which two candidates count as a tie.
     pub ambiguity_margin: f64,
+    /// Overlap above which an unmatched track is a stale duplicate of an updated one.
+    pub stale_overlap: f64,
     /// Evidence entries kept per track.
     pub max_observations: usize,
     /// Decay half-life for label votes, in seconds.
@@ -35,6 +37,7 @@ impl Config {
             min_size_px: 12.0,
             max_appearance_distance: 0.55,
             ambiguity_margin: 0.15,
+            stale_overlap: 0.5,
             max_observations: 3,
             label_half_life_s: 0.4,
             min_label_margin: 0.25,

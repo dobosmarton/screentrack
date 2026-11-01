@@ -18,30 +18,53 @@ pub(crate) struct Matches {
     pub(crate) used_tracks: Vec<bool>,
 }
 
+/// How far the walk over one identity's candidates has got.
+#[derive(Clone, Copy)]
+enum Progress {
+    Unseen,
+    Cheapest(f64),
+    Settled,
+}
+
+impl Progress {
+    /// Takes the next cost, returning whether it ties the identity's cheapest.
+    fn advance(&mut self, cost: f64, margin: f64) -> bool {
+        match *self {
+            Self::Unseen => {
+                *self = Self::Cheapest(cost);
+                false
+            }
+            Self::Cheapest(best) => {
+                *self = Self::Settled;
+                cost - best < margin
+            }
+            Self::Settled => false,
+        }
+    }
+}
+
 /// Marks ambiguous identities in one pass over `candidates`, which must be sorted.
 ///
-/// Sorting makes costs adjacent within each identity, so comparing a cost with the
-/// previous one for that identity finds every close pair.
+/// Only an identity's two cheapest candidates count, and sorting makes those the first
+/// two it sees. Worse options must not count: in a crowded frame nearly every identity
+/// has some pair of similar ones, which rejected almost every match on real footage.
 pub(crate) fn find_ambiguous(
     candidates: &[Candidate],
     margin: f64,
     track_count: usize,
     detection_count: usize,
 ) -> Ambiguity {
-    let mut previous_by_track = vec![None; track_count];
-    let mut previous_by_detection = vec![None; detection_count];
+    let mut by_track = vec![Progress::Unseen; track_count];
+    let mut by_detection = vec![Progress::Unseen; detection_count];
     let mut ambiguity = Ambiguity {
         tracks: vec![false; track_count],
         detections: vec![false; detection_count],
     };
     for candidate in candidates {
-        let is_close =
-            |previous: Option<f64>| previous.is_some_and(|cost| candidate.cost - cost < margin);
-        ambiguity.tracks[candidate.track] |= is_close(previous_by_track[candidate.track]);
+        ambiguity.tracks[candidate.track] |=
+            by_track[candidate.track].advance(candidate.cost, margin);
         ambiguity.detections[candidate.detection] |=
-            is_close(previous_by_detection[candidate.detection]);
-        previous_by_track[candidate.track] = Some(candidate.cost);
-        previous_by_detection[candidate.detection] = Some(candidate.cost);
+            by_detection[candidate.detection].advance(candidate.cost, margin);
     }
     ambiguity
 }
@@ -93,14 +116,13 @@ mod tests {
         (0..flags.len()).filter(|&index| flags[index]).collect()
     }
 
-    fn close_pair_exists(costs: &[f64]) -> bool {
-        costs
-            .iter()
-            .enumerate()
-            .any(|(index, a)| costs[index + 1..].iter().any(|b| (a - b).abs() < MARGIN))
+    fn cheapest_two_are_close(costs: &[f64]) -> bool {
+        let mut sorted = costs.to_vec();
+        sorted.sort_unstable_by(f64::total_cmp);
+        matches!(sorted.as_slice(), [first, second, ..] if second - first < MARGIN)
     }
 
-    /// The `O(n²)` definition of ambiguity, ported from the Python oracle test.
+    /// The definition of ambiguity, written without the one-pass walk.
     fn exhaustive(candidates: &[Candidate], tracks: usize, detections: usize) -> Ambiguity {
         let flags = |count: usize, key: fn(&Candidate) -> usize| -> Vec<bool> {
             (0..count)
@@ -110,7 +132,7 @@ mod tests {
                         .filter(|item| key(item) == identity)
                         .map(|item| item.cost)
                         .collect();
-                    close_pair_exists(&costs)
+                    cheapest_two_are_close(&costs)
                 })
                 .collect()
         };
@@ -121,18 +143,19 @@ mod tests {
     }
 
     #[test]
-    fn lower_ranked_close_costs_remain_ambiguous() {
-        let candidates = sorted(&[
-            (0.0, 0, 0),
-            (0.10, 1, 1),
-            (0.20, 0, 2),
-            (0.24, 2, 1),
-            (0.25, 0, 3),
-        ]);
-        let ambiguity = find_ambiguous(&candidates, MARGIN, 3, 4);
+    fn close_costs_below_a_clear_winner_do_not_count() {
+        let candidates = sorted(&[(0.0, 0, 0), (0.50, 0, 1), (0.52, 0, 2), (0.54, 0, 3)]);
+        let ambiguity = find_ambiguous(&candidates, MARGIN, 1, 4);
+        assert_eq!(indices(&ambiguity.tracks), [] as [usize; 0]);
+        assert_eq!(ambiguity, exhaustive(&candidates, 1, 4));
+    }
+
+    #[test]
+    fn close_leaders_are_ambiguous_however_many_follow() {
+        let candidates = sorted(&[(0.0, 0, 0), (0.10, 0, 1), (0.90, 0, 2)]);
+        let ambiguity = find_ambiguous(&candidates, MARGIN, 1, 3);
         assert_eq!(indices(&ambiguity.tracks), [0]);
-        assert_eq!(indices(&ambiguity.detections), [1]);
-        assert_eq!(ambiguity, exhaustive(&candidates, 3, 4));
+        assert_eq!(ambiguity, exhaustive(&candidates, 1, 3));
     }
 
     #[test]

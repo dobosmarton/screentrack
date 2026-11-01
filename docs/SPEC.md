@@ -36,7 +36,7 @@ The detector returns independent boxes per frame. The tracker links them across 
 3. **Reset.** It drops all history on a camera reset, or when more than `history` seconds have passed since the last frame.
 4. **Motion compensation.** It shifts surviving tracks by the camera pan `(dx, dy)` and drops tracks older than `history`.
 5. **Candidate generation.** It keeps only plausible (track, detection) pairs, gated by distance-over-time and appearance difference. Horizontal pruning uses binary search over the sorted x-centres.
-6. **Ambiguity rejection.** A track or detection with two candidate costs closer than `ambiguity_margin` is never matched.
+6. **Ambiguity rejection.** A track or detection whose two cheapest candidate costs are closer than `ambiguity_margin` is never matched.
 7. **Greedy matching.** Remaining pairs are matched cheapest-first, one-to-one.
 8. **Label vote.** Each track keeps its recent evidence (label, confidence, time). A confidence-weighted, time-decayed vote smooths label flicker.
 9. **Output.** Each detection gets a stable track ID, a smoothed label, the raw label and an agreement score.
@@ -57,6 +57,7 @@ All arithmetic uses `f64` to match Python floats.
 | `min_size_px` | 12.0 | Floor for box size in the gate. |
 | `max_appearance_distance` | 0.55 | Euclidean signature distance above which a pair is rejected. |
 | `ambiguity_margin` | 0.15 | Cost difference below which two candidates count as a tie (strict `<`). |
+| `stale_overlap` | 0.5 | Overlap above which an unmatched track is a stale duplicate of an updated one (strict `>`). |
 | `max_observations` | 3 | Evidence entries kept per track. |
 | `label_half_life_s` | 0.4 | Decay half-life for label votes. |
 | `min_label_margin` | 0.25 | Required normalized margin to switch a label. |
@@ -99,14 +100,14 @@ Given tracks `T` (ordered), detections `D` (ordered) and time `t`:
    - `cost = distance / allowed + app`.
 
    Pruning by x-centre (`old_x ± allowed`, inclusive bounds) is an optimization only, and it keeps Python's exact bounds and order. Sort candidates lexicographically by `(cost, track_index, detection_index)`.
-6. **Ambiguity.** Walk the sorted list, remembering the previous cost seen for each track and each detection. If `cost - previous < ambiguity_margin`, mark that track (or detection) ambiguous. Record `last_ambiguous_count` as the number of ambiguous detections.
+6. **Ambiguity.** Walk the sorted list. The first two candidates seen for a track or detection are its cheapest. If `second - first < ambiguity_margin`, mark that track (or detection) ambiguous. Later candidates never count. Record `last_ambiguous_count` as the number of ambiguous detections.
 7. **Matching.** Walk the sorted list again. Match `(i, j)` only if neither is ambiguous and neither is already used.
 8. **Emit, in detection order.** For each detection `j`:
    - **If matched to track `i`:** reuse that track's ID and evidence. **Otherwise:** allocate a new ID from a monotonically increasing counter, with empty evidence.
    - Append `(label, confidence, t)` to the evidence. Keep entries with `t - captured_at <= history_s`, then keep the last `max_observations`.
    - Run the label vote (§3.5) to get `(label, agreement)`.
    - The output carries `track_id`, `label`, `raw_label`, `agreement` (`None` when fewer than 2 evidence entries) and the frame's metadata.
-9. **New track list:** the tracks updated in step 8 (in detection order), followed by unmatched old tracks (in their previous order). Ambiguous old tracks survive this way.
+9. **New track list:** the tracks updated in step 8 (in detection order), followed by unmatched old tracks (in their previous order). An unmatched track is dropped if its intersection over union with any updated track exceeds `stale_overlap`. Otherwise ambiguous old tracks survive this way.
 
 ### 3.5 Label vote
 
@@ -245,7 +246,7 @@ Toolchain:
 1. **Rust unit tests.** Port every case from `test_temporal_association_scaling.py` and the tracker cases in `test_stream_perception.py`:
    - ambiguity at exactly 0.15 is not a tie;
    - equal costs are a tie;
-   - lower-ranked close costs stay ambiguous;
+   - close costs below a clear winner do not count;
    - plus reset, pan, expiry, guard and label-vote edge cases.
 2. **Exhaustive oracle.** A brute-force `O(n·m)` candidate and ambiguity implementation in Rust test code. Property tests (`proptest`) check that the pruned version matches it on random scenes, mirroring the existing Python oracle test.
 3. **Golden fixtures.** A small exporter script in the AoE2 repo runs the *Python* tracker over:

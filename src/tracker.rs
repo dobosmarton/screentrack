@@ -13,6 +13,19 @@ use crate::{BoundingBox, Detection, Motion, Signature, Tracked};
 const NEVER_CAPTURED_ID: i64 = -1;
 const NEVER_CAPTURED_AT: f64 = -1.0;
 
+/// Intersection over union. Boxes that only touch have none.
+fn overlap(a: BoundingBox, b: BoundingBox) -> f64 {
+    let width = a[2].min(b[2]) - a[0].max(b[0]);
+    let height = a[3].min(b[3]) - a[1].max(b[1]);
+    if width <= 0.0 || height <= 0.0 {
+        return 0.0;
+    }
+    let intersection = width * height;
+    let area_a = (a[2] - a[0]) * (a[3] - a[1]);
+    let area_b = (b[2] - b[0]) * (b[3] - b[1]);
+    intersection / (area_a + area_b - intersection)
+}
+
 /// An object remembered between frames.
 #[derive(Clone, Debug)]
 pub(crate) struct Track {
@@ -166,7 +179,7 @@ impl Tracker {
     }
 
     /// Builds the output and the next track list: updated tracks in detection order,
-    /// followed by unmatched old tracks in their previous order.
+    /// followed by unmatched old tracks in their previous order, without stale duplicates.
     fn emit(
         &mut self,
         detections: &[Detection],
@@ -204,15 +217,22 @@ impl Tracker {
             });
         }
         let previous = std::mem::take(&mut self.tracks);
-        updated.extend(
-            previous
-                .into_iter()
-                .zip(used_tracks)
-                .filter(|(_, used)| !used)
-                .map(|(track, _)| track),
-        );
+        let survivors: Vec<Track> = previous
+            .into_iter()
+            .zip(used_tracks)
+            .filter(|(track, used)| !used && !self.is_stale_duplicate(track, &updated))
+            .map(|(track, _)| track)
+            .collect();
+        updated.extend(survivors);
         self.tracks = updated;
         output
+    }
+
+    /// An unmatched track on top of a fresh one would keep that object ambiguous forever.
+    fn is_stale_duplicate(&self, track: &Track, updated: &[Track]) -> bool {
+        updated
+            .iter()
+            .any(|fresh| overlap(track.bbox, fresh.bbox) > self.config.stale_overlap)
     }
 
     fn allocate_id(&mut self) -> u64 {
@@ -287,6 +307,16 @@ mod tests {
             label,
             confidence: 0.8,
             signature: [0.0; 6],
+        }
+    }
+
+    fn track(bbox: BoundingBox) -> Track {
+        Track {
+            id: 0,
+            bbox,
+            signature: [0.0; 6],
+            evidence: Vec::new(),
+            last_seen_at: 0.0,
         }
     }
 
@@ -411,6 +441,66 @@ mod tests {
                 .map(|track| track.id)
                 .collect::<Vec<_>>(),
             [2, 0, 1]
+        );
+    }
+
+    #[test]
+    fn a_duplicate_box_heals_instead_of_cascading() {
+        let object = detection(1, [100.0, 50.0, 120.0, 80.0]);
+        let twin = detection(1, [102.0, 50.0, 122.0, 80.0]);
+        let mut tracker = tracker();
+        step(&mut tracker, 1, 1.0, &[object]);
+        step(&mut tracker, 2, 1.2, &[object]);
+        step(&mut tracker, 3, 1.4, &[object, twin]);
+        let settled: Vec<u64> = [(4, 1.6), (5, 1.8), (6, 2.0), (7, 2.2), (8, 2.4)]
+            .into_iter()
+            .map(|(id, at)| step(&mut tracker, id, at, &[object])[0].track_id)
+            .collect();
+        assert!(settled[1..].windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn a_track_exactly_at_the_stale_limit_is_kept() {
+        let tracker = tracker();
+        let fresh = [track([0.0, 0.0, 10.0, 10.0])];
+        assert!(!tracker.is_stale_duplicate(&track([0.0, 0.0, 10.0, 5.0]), &fresh));
+        assert!(tracker.is_stale_duplicate(&track([0.0, 0.0, 10.0, 9.0]), &fresh));
+    }
+
+    #[test]
+    fn overlap_is_intersection_over_union() {
+        assert_eq!(overlap([0.0, 0.0, 10.0, 10.0], [0.0, 0.0, 10.0, 10.0]), 1.0);
+        assert_eq!(
+            overlap([0.0, 0.0, 10.0, 10.0], [5.0, 0.0, 15.0, 10.0]),
+            1.0 / 3.0
+        );
+        assert_eq!(
+            overlap([0.0, 0.0, 10.0, 10.0], [0.0, 5.0, 10.0, 15.0]),
+            1.0 / 3.0
+        );
+    }
+
+    #[test]
+    fn boxes_apart_on_one_axis_have_no_overlap() {
+        assert_eq!(
+            overlap([0.0, 0.0, 10.0, 10.0], [20.0, 0.0, 30.0, 10.0]),
+            0.0
+        );
+        assert_eq!(
+            overlap([0.0, 0.0, 10.0, 10.0], [0.0, 20.0, 10.0, 30.0]),
+            0.0
+        );
+    }
+
+    #[test]
+    fn boxes_that_only_touch_have_no_overlap() {
+        assert_eq!(
+            overlap([0.0, 0.0, 10.0, 10.0], [10.0, 0.0, 20.0, 10.0]),
+            0.0
+        );
+        assert_eq!(
+            overlap([0.0, 0.0, 10.0, 10.0], [0.0, 10.0, 10.0, 20.0]),
+            0.0
         );
     }
 
