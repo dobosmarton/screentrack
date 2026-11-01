@@ -33,12 +33,10 @@ Total time per frame at steady state, p95 in milliseconds, including signatures 
 
 | Density band | Python | screentrack | Speedup | Speedup, lower bound |
 |---|---|---|---|---|
-| Low | 64.14 | 1.55 | 43x | 35x |
-| Typical | 95.01 | 1.89 | 50x | 49x |
-| High | 70.68 | 1.86 | 38x | 34x |
-| Peak | 92.94 | 3.11 | 30x | 25x |
-
-These figures predate the identity fix. A rerun on a loaded machine showed no sign that the fix costs time, but a clean rerun is still needed.
+| Low | 60.60 | 0.98 | 62x | 60x |
+| Typical | 94.93 | 1.71 | 56x | 54x |
+| High | 66.74 | 1.48 | 45x | 40x |
+| Peak | 86.95 | 2.48 | 35x | 33x |
 
 Signature extraction is most of the cost on real frames, because real boxes are far larger than the crowded benchmark scene in `benches/`. That scene and `just bench` are for catching regressions, not for headline numbers.
 
