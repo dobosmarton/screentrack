@@ -38,11 +38,23 @@ Total time per frame at steady state, p95 in milliseconds, including signatures 
 | High | 70.68 | 1.86 | 38x | 34x |
 | Peak | 92.94 | 3.11 | 30x | 25x |
 
+These figures predate the identity fix. A rerun on a loaded machine showed no sign that the fix costs time, but a clean rerun is still needed.
+
 Signature extraction is most of the cost on real frames, because real boxes are far larger than the crowded benchmark scene in `benches/`. That scene and `just bench` are for catching regressions, not for headline numbers.
 
-## Known issue
+## Identity quality
 
-screentrack deliberately makes the same decisions as the Python tracker it replaces, including its weakness: a stationary object can lose its identity permanently after one duplicate detection. In the same benchmark, only 18.8% of IDs still named the same object two seconds later, against 88.8% for a simple IoU matcher. Speed is solved; identity quality is not.
+Share of IDs that still named the same object two seconds later, from the same benchmark:
+
+| Footage | screentrack | Simple IoU matcher |
+|---|---|---|
+| Generated scenes | 86.9% | 88.8% |
+| Recorded game, still camera | 80.1% | 94.2% |
+| Recorded game, moving camera | 66.0% | 92.0% |
+
+screentrack rarely points at the wrong object: 0.2% and 0.1% on the recorded clips, against 4.4% and 1.8% for IoU. Those wrong-target figures and the moving-camera row are rough, because automatic truth hasn't had its hand audit. The recorded rows come from one match.
+
+Before a fix on 2026-11-01, survival on the recorded clips was 0.0% and 1.5%.
 
 ## Parity
 
