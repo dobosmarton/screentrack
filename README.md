@@ -42,21 +42,26 @@ Signature extraction is most of the cost on real frames, because real boxes are 
 
 ## Identity quality
 
-Share of IDs that still named the same object two seconds later, from the same benchmark:
+Share of IDs that still named the same object two seconds later, from the same benchmark. The recorded clips come from three matches, with unit tracks reviewed by eye:
 
 | Footage | screentrack | Simple IoU matcher |
 |---|---|---|
 | Generated scenes | 86.9% | 88.8% |
-| Recorded game, still camera | 80.1% | 94.2% |
-| Recorded game, moving camera | 66.0% | 92.0% |
+| Recorded game, 6 clips | 78.8% | 94.1% |
 
-screentrack rarely points at the wrong object: 0.2% and 0.1% on the recorded clips, against 4.4% and 1.8% for IoU. Those wrong-target figures and the moving-camera row are rough, because automatic truth hasn't had its hand audit. The recorded rows come from one match.
+On the recorded clips, screentrack's ID names a different object 0.24% of the time, against 0.07% for IoU. A second label on the same spot doesn't count as a different object, because a click lands in the same place.
 
-Before a fix on 2026-11-01, survival on the recorded clips was 0.0% and 1.5%.
+So screentrack is fast but doesn't yet keep identities better than plain IoU matching. The AoE2 tracker it was ported from has since changed, in [aoe2-agent#11](https://github.com/dobosmarton/aoe2-agent/pull/11):
+
+- Matches rank by overlap.
+- A label change needs the same box.
+- Static objects are remembered for 5 s.
+
+On the clips from the second and third matches, those rules keep 96.5% of IDs against 94.4% for IoU. However, they were developed on those clips, so they'll be ported only after they pass a test on a newly recorded match.
 
 ## Parity
 
-screentrack must make the same identity decisions as the Python tracker it replaces. [docs/SPEC.md](docs/SPEC.md) defines the contract, and `fixtures/` holds golden output from that tracker, generated on Python 3.11. Don't edit fixtures by hand.
+screentrack makes the same identity decisions as the AoE2 tracker at the reference commit named in `fixtures/manifest.json`. [docs/SPEC.md](docs/SPEC.md) defines the contract, and `fixtures/` holds golden output from that tracker, generated on Python 3.11. Don't edit fixtures by hand.
 
 Clippy enforces the numeric rules in `clippy.toml`. For example, `f64::hypot` is banned because it disagrees with Python's `math.hypot` on about one input in ten.
 
