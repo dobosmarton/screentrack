@@ -40,7 +40,7 @@ def run_case(objects: int, spacing: int, rate_hz: int) -> tuple[list[float], lis
     rng = np.random.default_rng(3)
     pixels = rng.integers(0, 256, (HEIGHT, WIDTH, 3), dtype=np.uint8)
     settled_after = math.ceil(HISTORY_SECONDS * rate_hz) + SETTLING_FRAMES
-    tracker = screentrack.Tracker(screentrack.Config.aoe2())
+    tracker = screentrack.Tracker(screentrack.Config.aoe2(), {"villager"})
     labels = ["villager"] * objects
     confidences = np.full(objects, 0.8)
     prepare: list[float] = []

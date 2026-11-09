@@ -4,13 +4,15 @@ use std::cmp::Ordering;
 use std::ops::Range;
 
 use crate::config::Config;
+use crate::geometry::overlap;
 use crate::tracker::Track;
-use crate::{BoundingBox, Detection, Signature};
+use crate::units::UnitLabels;
+use crate::{BoundingBox, Detection, LabelId, Signature};
 
 /// A plausible pairing of an existing track with a detection in this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Candidate {
-    /// Lower is better: normalized distance plus appearance distance.
+    /// Lower is better: position, appearance distance and any label penalty.
     pub cost: f64,
     /// Index into the tracks that survived this frame's expiry.
     pub track: usize,
@@ -54,13 +56,34 @@ impl MovementGate {
     }
 }
 
+/// The label a track last had, and whether it names a unit.
+struct Previous {
+    label: Option<LabelId>,
+    unit: bool,
+}
+
+/// A detection's label, and whether it names a unit.
+#[derive(Clone, Copy)]
+struct Kind {
+    label: LabelId,
+    unit: bool,
+}
+
 /// Returns every feasible pair, sorted by [`Candidate::ordering`].
 pub(crate) fn candidates(
     config: &Config,
+    units: &UnitLabels,
     tracks: &[Track],
     detections: &[Detection],
     captured_at: f64,
 ) -> Vec<Candidate> {
+    let kinds: Vec<Kind> = detections
+        .iter()
+        .map(|detection| Kind {
+            label: detection.label,
+            unit: units.contains(Some(detection.label)),
+        })
+        .collect();
     let mut by_x: Vec<(f64, usize)> = detections
         .iter()
         .enumerate()
@@ -71,8 +94,15 @@ pub(crate) fn candidates(
     let mut found = Vec::new();
     for (track_index, track) in tracks.iter().enumerate() {
         let gate = MovementGate::new(config, track, captured_at);
+        let label = track.last_label();
+        let previous = Previous {
+            label,
+            unit: units.contains(label),
+        };
         for &(_, detection_index) in &by_x[gate.horizontal_range(&by_x)] {
-            if let Some(cost) = matching_cost(config, track, &detections[detection_index], &gate) {
+            let detection = &detections[detection_index];
+            let kind = kinds[detection_index];
+            if let Some(cost) = matching_cost(config, track, &previous, detection, kind, &gate) {
                 found.push(Candidate {
                     cost,
                     track: track_index,
@@ -85,10 +115,19 @@ pub(crate) fn candidates(
     found
 }
 
+/// Ranks a pair by overlap, looks and label, or refuses it.
+///
+/// Overlap separates neighbours far better than distance, because a tracked object
+/// barely moves between frames. The label penalty stops a second label on one spot from
+/// tying with the first, while a flickering label can still continue its track. Only
+/// units may continue on a box they don't touch: otherwise a farm whose box was missed
+/// for a frame passed its ID to a villager standing in it.
 fn matching_cost(
     config: &Config,
     track: &Track,
+    previous: &Previous,
     detection: &Detection,
+    kind: Kind,
     gate: &MovementGate,
 ) -> Option<f64> {
     let (new_x, new_y) = center(&detection.bbox);
@@ -100,7 +139,26 @@ fn matching_cost(
     if appearance > config.max_appearance_distance {
         return None;
     }
-    Some(distance / gate.allowed + appearance)
+    let shared = overlap(track.bbox, detection.bbox);
+    let relabelled = previous.label.is_some_and(|label| label != kind.label);
+    if relabelled && shared < config.relabel_overlap {
+        return None;
+    }
+    let units = previous.unit && kind.unit;
+    if previous.label.is_some() && !units && shared < config.static_overlap {
+        return None;
+    }
+    let position = if shared > 0.0 {
+        1.0 - shared
+    } else {
+        1.0 + distance / gate.allowed
+    };
+    let penalty = if relabelled {
+        config.label_penalty
+    } else {
+        0.0
+    };
+    Some(position + appearance + penalty)
 }
 
 #[expect(clippy::manual_midpoint, reason = "mirrors the Python formula exactly")]
@@ -209,8 +267,17 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::label::Evidence;
 
     const ZERO_SIGNATURE: Signature = [0.0; 6];
+    const VILLAGER: LabelId = 0;
+    const SHEEP: LabelId = 1;
+    const HOUSE: LabelId = 2;
+    const MILL: LabelId = 3;
+
+    fn units() -> UnitLabels {
+        UnitLabels::new([VILLAGER, SHEEP])
+    }
 
     fn track(bbox: BoundingBox, signature: Signature, last_seen_at: f64) -> Track {
         Track {
@@ -222,25 +289,50 @@ mod tests {
         }
     }
 
+    fn labelled(bbox: BoundingBox, label: LabelId) -> Track {
+        Track {
+            evidence: vec![Evidence {
+                label,
+                confidence: 0.8,
+                captured_at: 1.0,
+            }],
+            ..track(bbox, ZERO_SIGNATURE, 1.0)
+        }
+    }
+
     fn detection(bbox: BoundingBox, signature: Signature) -> Detection {
         Detection {
             bbox,
-            label: 0,
+            label: VILLAGER,
             confidence: 0.8,
             signature,
         }
     }
 
+    fn of_kind(bbox: BoundingBox, label: LabelId) -> Detection {
+        Detection {
+            label,
+            ..detection(bbox, ZERO_SIGNATURE)
+        }
+    }
+
     fn feasible_detections(tracks: &[Track], detections: &[Detection], at: f64) -> Vec<usize> {
-        candidates(&Config::aoe2(), tracks, detections, at)
+        candidates(&Config::aoe2(), &units(), tracks, detections, at)
             .iter()
             .map(|item| item.detection)
             .collect()
     }
 
+    fn only_cost(track: Track, detection: Detection) -> Option<f64> {
+        let found = candidates(&Config::aoe2(), &units(), &[track], &[detection], 1.2);
+        assert!(found.len() <= 1);
+        found.first().map(|item| item.cost)
+    }
+
     /// Scans every pair, skipping the horizontal pruning under test.
     fn exhaustive(
         config: &Config,
+        units: &UnitLabels,
         tracks: &[Track],
         detections: &[Detection],
         at: f64,
@@ -248,8 +340,17 @@ mod tests {
         let mut found = Vec::new();
         for (track_index, track) in tracks.iter().enumerate() {
             let gate = MovementGate::new(config, track, at);
+            let label = track.last_label();
+            let previous = Previous {
+                label,
+                unit: units.contains(label),
+            };
             for (detection_index, item) in detections.iter().enumerate() {
-                if let Some(cost) = matching_cost(config, track, item, &gate) {
+                let kind = Kind {
+                    label: item.label,
+                    unit: units.contains(Some(item.label)),
+                };
+                if let Some(cost) = matching_cost(config, track, &previous, item, kind, &gate) {
                     found.push(Candidate {
                         cost,
                         track: track_index,
@@ -327,17 +428,77 @@ mod tests {
     }
 
     #[test]
-    fn cost_is_normalized_distance_plus_appearance() {
+    fn apart_boxes_cost_one_plus_normalized_distance_plus_appearance() {
         let tracks = [track([0.0, 0.0, 20.0, 20.0], ZERO_SIGNATURE, 1.0)];
         let signature = [0.3, 0.4, 0.0, 0.0, 0.0, 0.0];
         let detections = [detection([40.0, 0.0, 60.0, 20.0], signature)];
-        let found = candidates(&Config::aoe2(), &tracks, &detections, 2.0);
+        let found = candidates(&Config::aoe2(), &units(), &tracks, &detections, 2.0);
         assert_eq!(found.len(), 1);
         assert!(
-            (found[0].cost - (0.5 + 0.5)).abs() < 1e-12,
+            (found[0].cost - (1.0 + 0.5 + 0.5)).abs() < 1e-12,
             "{}",
             found[0].cost
         );
+    }
+
+    #[test]
+    fn overlapping_boxes_cost_one_minus_their_overlap() {
+        let cost = only_cost(
+            labelled([0.0, 0.0, 10.0, 10.0], HOUSE),
+            of_kind([5.0, 0.0, 15.0, 10.0], HOUSE),
+        );
+        assert_eq!(cost, Some(1.0 - 1.0 / 3.0));
+    }
+
+    #[test]
+    fn a_new_label_costs_the_penalty() {
+        let cost = only_cost(
+            labelled([0.0, 0.0, 10.0, 10.0], HOUSE),
+            of_kind([0.0, 0.0, 10.0, 10.0], MILL),
+        );
+        assert_eq!(cost, Some(1.0));
+    }
+
+    #[test]
+    fn a_new_label_needs_half_the_box() {
+        let old = [0.0, 0.0, 30.0, 10.0];
+        // Boxes inside the old one, overlapping by exactly 1/2 and just under it.
+        let half = of_kind([15.0, 0.0, 30.0, 10.0], MILL);
+        let under = of_kind([15.5, 0.0, 30.0, 10.0], MILL);
+        assert!(only_cost(labelled(old, HOUSE), half).is_some());
+        assert_eq!(only_cost(labelled(old, HOUSE), under), None);
+    }
+
+    #[test]
+    fn a_static_track_needs_a_tenth_of_the_box() {
+        let old = [0.0, 0.0, 11.0, 100.0];
+        // Overlaps of exactly 1/10 and just under it, close enough for the movement gate.
+        let tenth = of_kind([9.0, 0.0, 20.0, 100.0], HOUSE);
+        let under = of_kind([9.1, 0.0, 20.1, 100.0], HOUSE);
+        assert!(only_cost(labelled(old, HOUSE), tenth).is_some());
+        assert_eq!(only_cost(labelled(old, HOUSE), under), None);
+    }
+
+    #[test]
+    fn only_two_units_continue_without_touching() {
+        let old = [0.0, 0.0, 30.0, 80.0];
+        let beside = [32.0, 0.0, 62.0, 80.0];
+        assert!(only_cost(labelled(old, VILLAGER), of_kind(beside, VILLAGER)).is_some());
+        assert_eq!(
+            only_cost(labelled(old, HOUSE), of_kind(beside, HOUSE)),
+            None
+        );
+        // A label change needs overlap anyway, so a mixed pair can't continue apart.
+        assert_eq!(
+            only_cost(labelled(old, VILLAGER), of_kind(beside, SHEEP)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_track_without_a_label_continues_anywhere_in_reach() {
+        let beside = of_kind([32.0, 0.0, 62.0, 80.0], HOUSE);
+        assert!(only_cost(track([0.0, 0.0, 30.0, 80.0], ZERO_SIGNATURE, 1.0), beside).is_some());
     }
 
     #[test]
@@ -417,23 +578,28 @@ mod tests {
 
         #[test]
         fn pruning_never_changes_the_candidate_set(
-            old in prop::collection::vec((arb_box(), arb_signature(), 0_u8..5), 0..24),
-            new in prop::collection::vec((arb_box(), arb_signature()), 0..24),
+            old in prop::collection::vec((arb_box(), arb_signature(), 0_u8..5, 0_u32..4), 0..24),
+            new in prop::collection::vec((arb_box(), arb_signature(), 0_u32..4), 0..24),
         ) {
             let config = Config::aoe2();
             let tracks: Vec<Track> = old
                 .into_iter()
-                .map(|(bbox, signature, age)| {
-                    track(bbox, signature, 2.0 - f64::from(age) * 0.2)
+                .map(|(bbox, signature, age, label)| Track {
+                    signature,
+                    last_seen_at: 2.0 - f64::from(age) * 0.2,
+                    ..labelled(bbox, label)
                 })
                 .collect();
             let detections: Vec<Detection> = new
                 .into_iter()
-                .map(|(bbox, signature)| detection(bbox, signature))
+                .map(|(bbox, signature, label)| Detection {
+                    label,
+                    ..detection(bbox, signature)
+                })
                 .collect();
             prop_assert_eq!(
-                candidates(&config, &tracks, &detections, 2.0),
-                exhaustive(&config, &tracks, &detections, 2.0)
+                candidates(&config, &units(), &tracks, &detections, 2.0),
+                exhaustive(&config, &units(), &tracks, &detections, 2.0)
             );
         }
     }

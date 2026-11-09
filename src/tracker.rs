@@ -6,24 +6,20 @@ use std::time::Instant;
 use crate::candidates::Candidate;
 use crate::candidates::candidates;
 use crate::config::Config;
+use crate::geometry::overlap;
 use crate::label::{Evidence, vote};
-use crate::matching::{Matches, find_ambiguous, greedy_matches};
-use crate::{BoundingBox, Detection, Motion, Signature, Tracked};
+use crate::matching::{Matches, find_ambiguous, greedy_matches, with_refused_first_choices};
+use crate::units::UnitLabels;
+use crate::{BoundingBox, Detection, LabelId, Motion, Signature, Tracked};
 
 const NEVER_CAPTURED_ID: i64 = -1;
 const NEVER_CAPTURED_AT: f64 = -1.0;
 
-/// Intersection over union. Boxes that only touch have none.
-fn overlap(a: BoundingBox, b: BoundingBox) -> f64 {
-    let width = a[2].min(b[2]) - a[0].max(b[0]);
-    let height = a[3].min(b[3]) - a[1].max(b[1]);
-    if width <= 0.0 || height <= 0.0 {
-        return 0.0;
-    }
-    let intersection = width * height;
-    let area_a = (a[2] - a[0]) * (a[3] - a[1]);
-    let area_b = (b[2] - b[0]) * (b[3] - b[1]);
-    intersection / (area_a + area_b - intersection)
+/// How long tracks live without observations, in seconds.
+#[derive(Clone, Copy)]
+struct Lifetimes {
+    unit: f64,
+    static_object: f64,
 }
 
 /// An object remembered between frames.
@@ -34,6 +30,13 @@ pub(crate) struct Track {
     pub(crate) signature: Signature,
     pub(crate) evidence: Vec<Evidence>,
     pub(crate) last_seen_at: f64,
+}
+
+impl Track {
+    /// The label of the newest evidence, or `None` before any.
+    pub(crate) fn last_label(&self) -> Option<LabelId> {
+        self.evidence.last().map(|item| item.label)
+    }
 }
 
 /// Measurements from the last accepted frame.
@@ -67,6 +70,7 @@ pub struct Trace {
 #[derive(Clone, Debug)]
 pub struct Tracker {
     config: Config,
+    units: UnitLabels,
     tracks: Vec<Track>,
     next_id: u64,
     last_capture_id: i64,
@@ -78,10 +82,15 @@ pub struct Tracker {
 
 impl Tracker {
     /// Creates an empty tracker.
+    ///
+    /// `unit_labels` names the labels of objects that move. Every other label is a
+    /// static object, such as a building or a resource: its track lives longer and only
+    /// continues on a box it touches.
     #[must_use]
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, unit_labels: impl IntoIterator<Item = LabelId>) -> Self {
         Self {
             config,
+            units: UnitLabels::new(unit_labels),
             tracks: Vec::new(),
             next_id: 0,
             last_capture_id: NEVER_CAPTURED_ID,
@@ -111,15 +120,22 @@ impl Tracker {
         if !self.accepts(capture_id, captured_at) {
             return None;
         }
-        if motion == Motion::Reset || captured_at - self.last_at > self.config.history_s {
+        if motion == Motion::Reset {
             self.reset();
         }
+        let lifetimes = self.lifetimes(captured_at);
         self.last_capture_id = capture_id;
         self.last_at = captured_at;
-        self.shift_and_expire(motion, captured_at);
+        self.shift_and_expire(motion, captured_at, lifetimes);
 
         let candidate_started = Instant::now();
-        let found = candidates(&self.config, &self.tracks, detections, captured_at);
+        let found = candidates(
+            &self.config,
+            &self.units,
+            &self.tracks,
+            detections,
+            captured_at,
+        );
         self.stats.candidate_ms = elapsed_ms(candidate_started);
         self.stats.candidate_count = found.len();
 
@@ -131,7 +147,7 @@ impl Tracker {
             detections.len(),
         );
         self.stats.ambiguous_count = ambiguity.detections.iter().filter(|&&flag| flag).count();
-        let matches = greedy_matches(&found, &ambiguity);
+        let matches = greedy_matches(&found, &with_refused_first_choices(&found, &ambiguity));
         #[cfg(feature = "trace")]
         {
             self.trace = Trace::new(found, &ambiguity, &matches);
@@ -166,10 +182,30 @@ impl Tracker {
         &self.trace
     }
 
-    fn shift_and_expire(&mut self, motion: Motion, captured_at: f64) {
-        let history_s = self.config.history_s;
-        self.tracks
-            .retain(|track| captured_at - track.last_seen_at <= history_s);
+    /// How long unit and static tracks live without observations, as of this frame.
+    ///
+    /// Slow frames still need history: a fixed lifetime would forget everything at once.
+    fn lifetimes(&self, captured_at: f64) -> Lifetimes {
+        let config = &self.config;
+        let unit = config
+            .history_s
+            .max(config.gap_factor * (captured_at - self.last_at));
+        Lifetimes {
+            unit,
+            static_object: unit.max(config.static_memory_s),
+        }
+    }
+
+    fn shift_and_expire(&mut self, motion: Motion, captured_at: f64, lifetimes: Lifetimes) {
+        let units = &self.units;
+        self.tracks.retain(|track| {
+            let lifetime = if units.contains(track.last_label()) {
+                lifetimes.unit
+            } else {
+                lifetimes.static_object
+            };
+            captured_at - track.last_seen_at <= lifetime
+        });
         if let Motion::Pan { dx, dy } = motion {
             for track in &mut self.tracks {
                 let [x0, y0, x1, y1] = track.bbox;
@@ -229,10 +265,15 @@ impl Tracker {
     }
 
     /// An unmatched track on top of a fresh one would keep that object ambiguous forever.
+    ///
+    /// Only the same label counts. The detector often puts two labels on one spot, and a
+    /// second label that skips a frame should get its ID back when it returns.
     fn is_stale_duplicate(&self, track: &Track, updated: &[Track]) -> bool {
-        updated
-            .iter()
-            .any(|fresh| overlap(track.bbox, fresh.bbox) > self.config.stale_overlap)
+        let label = track.last_label();
+        updated.iter().any(|fresh| {
+            overlap(track.bbox, fresh.bbox) > self.config.stale_overlap
+                && fresh.last_label() == label
+        })
     }
 
     fn allocate_id(&mut self) -> u64 {
@@ -299,6 +340,9 @@ mod tests {
 
     const VILLAGER: u32 = 1;
     const SHEEP: u32 = 2;
+    const HOUSE: u32 = 3;
+    const MILL: u32 = 4;
+    const FARM: u32 = 5;
     const BOX: BoundingBox = [100.0, 100.0, 120.0, 140.0];
 
     fn detection(label: u32, bbox: BoundingBox) -> Detection {
@@ -321,7 +365,7 @@ mod tests {
     }
 
     fn tracker() -> Tracker {
-        Tracker::new(Config::aoe2())
+        Tracker::new(Config::aoe2(), [VILLAGER, SHEEP])
     }
 
     fn step(tracker: &mut Tracker, id: i64, at: f64, detections: &[Detection]) -> Vec<Tracked> {
@@ -362,31 +406,117 @@ mod tests {
         assert!(flicker[0].agreement.is_some_and(|value| value < 1.0));
     }
 
+    /// Steps through empty frames every 0.2 s, from `from` until just before `to`.
+    fn empty_frames(tracker: &mut Tracker, first_id: i64, from: f64, to: f64) -> i64 {
+        let mut id = first_id;
+        let mut at = from;
+        while at < to - 1e-9 {
+            step(tracker, id, at, &[]);
+            id += 1;
+            at += 0.2;
+        }
+        id
+    }
+
     #[test]
     fn history_expires_and_ids_are_not_reused() {
         let mut tracks = tracker();
         let first = step(&mut tracks, 1, 1.0, &[detection(VILLAGER, BOX)]);
-        let second = step(&mut tracks, 2, 2.1, &[detection(VILLAGER, BOX)]);
+        let id = empty_frames(&mut tracks, 2, 1.2, 2.2);
+        let second = step(&mut tracks, id, 2.2, &[detection(VILLAGER, BOX)]);
         assert_ne!(first[0].track_id, second[0].track_id);
         assert_eq!(second[0].agreement, None);
     }
 
     #[test]
-    fn a_track_expires_while_newer_frames_arrive() {
+    fn a_unit_survives_at_exactly_the_history_limit() {
         let mut tracks = tracker();
         let first = step(&mut tracks, 1, 1.0, &[detection(VILLAGER, BOX)]);
-        step(&mut tracks, 2, 1.6, &[]);
-        let later = step(&mut tracks, 3, 2.2, &[detection(VILLAGER, BOX)]);
+        for (id, at) in [(2, 1.25), (3, 1.5), (4, 1.75)] {
+            step(&mut tracks, id, at, &[]);
+        }
+        let later = step(&mut tracks, 5, 2.0, &[detection(VILLAGER, BOX)]);
+        assert_eq!(later[0].track_id, first[0].track_id);
+    }
+
+    #[test]
+    fn a_slow_frame_stretches_lifetimes_instead_of_resetting() {
+        let mut tracks = tracker();
+        let first = step(&mut tracks, 1, 1.0, &[detection(VILLAGER, BOX)]);
+        let second = step(&mut tracks, 2, 3.0, &[detection(VILLAGER, BOX)]);
+        assert_eq!(second[0].track_id, first[0].track_id);
+    }
+
+    #[test]
+    fn lifetimes_stretch_to_exactly_three_frame_gaps() {
+        let mut tracks = tracker();
+        step(&mut tracks, 1, 1.0, &[detection(VILLAGER, BOX)]);
+        step(&mut tracks, 2, 1.5, &[]);
+        let lifetimes = tracks.lifetimes(2.0);
+        assert_eq!(lifetimes.unit, 1.5);
+        assert_eq!(lifetimes.static_object, 5.0);
+        assert_eq!(tracks.lifetimes(4.0).static_object, 7.5);
+    }
+
+    #[test]
+    fn a_missed_building_outlives_a_missed_unit() {
+        let mut tracks = tracker();
+        let house = [300.0, 100.0, 360.0, 160.0];
+        let both = [detection(HOUSE, house), detection(VILLAGER, BOX)];
+        let first = step(&mut tracks, 1, 1.0, &both);
+        let id = empty_frames(&mut tracks, 2, 1.2, 6.0);
+        let later = step(&mut tracks, id, 6.0, &both);
+        assert_eq!(later[0].track_id, first[0].track_id);
+        assert_ne!(later[1].track_id, first[1].track_id);
+    }
+
+    #[test]
+    fn a_missed_building_is_forgotten_after_its_memory() {
+        let mut tracks = tracker();
+        let house = [detection(HOUSE, [300.0, 100.0, 360.0, 160.0])];
+        let first = step(&mut tracks, 1, 1.0, &house);
+        let id = empty_frames(&mut tracks, 2, 1.2, 6.2);
+        let later = step(&mut tracks, id, 6.2, &house);
         assert_ne!(later[0].track_id, first[0].track_id);
     }
 
     #[test]
-    fn a_track_survives_at_exactly_the_history_limit() {
+    fn two_labels_on_one_spot_keep_two_ids() {
         let mut tracks = tracker();
-        let first = step(&mut tracks, 1, 1.0, &[detection(VILLAGER, BOX)]);
-        step(&mut tracks, 2, 1.5, &[]);
-        let later = step(&mut tracks, 3, 2.0, &[detection(VILLAGER, BOX)]);
-        assert_eq!(later[0].track_id, first[0].track_id);
+        let house = [300.0, 100.0, 360.0, 160.0];
+        let both = [detection(HOUSE, house), detection(MILL, house)];
+        let first = step(&mut tracks, 1, 1.0, &both);
+        step(&mut tracks, 2, 1.2, &[detection(HOUSE, house)]);
+        let again = step(&mut tracks, 3, 1.4, &both);
+        assert_eq!(again[1].track_id, first[1].track_id);
+    }
+
+    #[test]
+    fn a_farm_refused_its_box_never_takes_the_next_farm() {
+        // Match 4, still clip, 48-50 s. The farm's ID was refused its own box as
+        // ambiguous against a duplicate, and once took the next farm's box instead.
+        let mut tracks = tracker();
+        let farm = |bbox| detection(FARM, bbox);
+        let first = step(&mut tracks, 1, 48.1, &[farm([190.0, 131.0, 465.0, 307.0])]);
+        step(
+            &mut tracks,
+            2,
+            48.3,
+            &[
+                farm([119.0, 106.0, 385.0, 277.0]),
+                farm([268.0, 170.0, 499.0, 314.0]),
+            ],
+        );
+        let last = step(
+            &mut tracks,
+            3,
+            49.1,
+            &[
+                farm([58.0, 71.0, 318.0, 242.0]),
+                farm([218.0, 148.0, 484.0, 316.0]),
+            ],
+        );
+        assert_ne!(last[0].track_id, first[0].track_id);
     }
 
     #[test]
@@ -460,48 +590,26 @@ mod tests {
     }
 
     #[test]
+    fn only_the_same_label_makes_a_stale_duplicate() {
+        let tracker = tracker();
+        let labelled = |label| Track {
+            evidence: vec![Evidence {
+                label,
+                confidence: 0.8,
+                captured_at: 0.0,
+            }],
+            ..track(BOX)
+        };
+        assert!(tracker.is_stale_duplicate(&labelled(HOUSE), &[labelled(HOUSE)]));
+        assert!(!tracker.is_stale_duplicate(&labelled(MILL), &[labelled(HOUSE)]));
+    }
+
+    #[test]
     fn a_track_exactly_at_the_stale_limit_is_kept() {
         let tracker = tracker();
         let fresh = [track([0.0, 0.0, 10.0, 10.0])];
         assert!(!tracker.is_stale_duplicate(&track([0.0, 0.0, 10.0, 5.0]), &fresh));
         assert!(tracker.is_stale_duplicate(&track([0.0, 0.0, 10.0, 9.0]), &fresh));
-    }
-
-    #[test]
-    fn overlap_is_intersection_over_union() {
-        assert_eq!(overlap([0.0, 0.0, 10.0, 10.0], [0.0, 0.0, 10.0, 10.0]), 1.0);
-        assert_eq!(
-            overlap([0.0, 0.0, 10.0, 10.0], [5.0, 0.0, 15.0, 10.0]),
-            1.0 / 3.0
-        );
-        assert_eq!(
-            overlap([0.0, 0.0, 10.0, 10.0], [0.0, 5.0, 10.0, 15.0]),
-            1.0 / 3.0
-        );
-    }
-
-    #[test]
-    fn boxes_apart_on_one_axis_have_no_overlap() {
-        assert_eq!(
-            overlap([0.0, 0.0, 10.0, 10.0], [20.0, 0.0, 30.0, 10.0]),
-            0.0
-        );
-        assert_eq!(
-            overlap([0.0, 0.0, 10.0, 10.0], [0.0, 20.0, 10.0, 30.0]),
-            0.0
-        );
-    }
-
-    #[test]
-    fn boxes_that_only_touch_have_no_overlap() {
-        assert_eq!(
-            overlap([0.0, 0.0, 10.0, 10.0], [10.0, 0.0, 20.0, 10.0]),
-            0.0
-        );
-        assert_eq!(
-            overlap([0.0, 0.0, 10.0, 10.0], [0.0, 10.0, 10.0, 20.0]),
-            0.0
-        );
     }
 
     #[test]
@@ -530,7 +638,7 @@ mod tests {
             max_observations: 10,
             ..Config::aoe2()
         };
-        let mut tracks = Tracker::new(config);
+        let mut tracks = Tracker::new(config, [VILLAGER]);
         for (id, at) in [(1, 1.0), (2, 1.5), (3, 2.0), (4, 2.25)] {
             step(&mut tracks, id, at, &[detection(VILLAGER, BOX)]);
         }
@@ -551,14 +659,6 @@ mod tests {
             .expect("newer frame");
         assert_ne!(second[0].track_id, first[0].track_id);
         assert!(tracks.observe(1, 1.0, Motion::Stable, &[]).is_none());
-    }
-
-    #[test]
-    fn a_frame_gap_longer_than_history_resets() {
-        let mut tracks = tracker();
-        let first = step(&mut tracks, 1, 1.0, &[detection(VILLAGER, BOX)]);
-        let second = step(&mut tracks, 2, 2.01, &[detection(VILLAGER, BOX)]);
-        assert_ne!(second[0].track_id, first[0].track_id);
     }
 
     #[test]

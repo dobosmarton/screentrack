@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from typing import Literal, TypeAlias, final
 
 import numpy as np
@@ -42,7 +43,14 @@ class Tracker:
     def matching_ms(self) -> float:
         """Time spent on ambiguity, matching and output in the last accepted frame."""
 
-    def __new__(cls, config: Config) -> Tracker: ...
+    def __new__(cls, config: Config, unit_labels: Iterable[str]) -> Tracker:
+        """Create an empty tracker.
+
+        `unit_labels` names the labels of objects that move. Every other label is a static
+        object, such as a building or a resource: its track lives longer and only continues
+        on a box it touches.
+        """
+
     def accepts(self, capture_id: int, captured_at: float) -> bool:
         """Return whether a frame is newer than the last by both ID and time."""
 

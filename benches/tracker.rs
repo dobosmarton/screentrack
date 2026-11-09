@@ -68,7 +68,7 @@ fn time_of(frame: i32, rate_hz: u32) -> f64 {
 fn observe_case(criterion: &mut Criterion, name: &str, spacing: f64, rate_hz: u32) {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let pixels = rng.pixels(STRIDE * HEIGHT);
-    let mut warm = Tracker::new(Config::aoe2());
+    let mut warm = Tracker::new(Config::aoe2(), [0]);
     for frame in 1..=WARMUP_FRAMES {
         let current = detections(&pixels, &scene(&mut rng, spacing));
         warm.observe(

@@ -135,13 +135,26 @@ impl PyTracker {
 
 #[pymethods]
 impl PyTracker {
+    /// `unit_labels` names the labels of objects that move, such as a frozenset of
+    /// strings. Every other label is a static object.
     #[new]
-    fn new(config: PyRef<'_, PyConfig>) -> Self {
-        Self {
-            inner: Tracker::new(config.0),
+    fn new(config: PyRef<'_, PyConfig>, unit_labels: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if unit_labels.is_instance_of::<PyString>() {
+            return Err(PyValueError::new_err(
+                "unit_labels must be a collection of labels, not one string",
+            ));
+        }
+        let mut tracker = Self {
+            inner: Tracker::new(config.0, []),
             label_ids: HashMap::new(),
             label_names: Vec::new(),
+        };
+        let mut units = Vec::new();
+        for label in unit_labels.try_iter()? {
+            units.push(tracker.intern(label?.cast::<PyString>()?)?);
         }
+        tracker.inner = Tracker::new(config.0, units);
+        Ok(tracker)
     }
 
     /// Whether a frame is newer than the last one by both ID and time.

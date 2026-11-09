@@ -9,10 +9,12 @@
 
 mod candidates;
 mod config;
+mod geometry;
 mod label;
 mod matching;
 mod signature;
 mod tracker;
+mod units;
 
 #[cfg(feature = "python")]
 mod python;

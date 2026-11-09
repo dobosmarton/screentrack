@@ -15,6 +15,7 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 
 #[derive(Deserialize)]
 struct Manifest {
+    mobile_labels: Vec<String>,
     tracker_sequences: Vec<String>,
 }
 
@@ -147,12 +148,13 @@ fn check_output(
     }
 }
 
-fn replay(name: &str) -> usize {
+fn replay(name: &str, units: &[String]) -> usize {
     let path = Path::new("fixtures/tracker").join(format!("{name}.json"));
     let text = std::fs::read_to_string(path).expect("the fixture exists");
     let sequence: Sequence = serde_json::from_str(&text).expect("the fixture is valid");
-    let mut tracker = Tracker::new(Config::aoe2());
     let mut labels = Labels::default();
+    let unit_ids: Vec<LabelId> = units.iter().map(|label| labels.id(label)).collect();
+    let mut tracker = Tracker::new(Config::aoe2(), unit_ids);
     for (index, frame) in sequence.frames.iter().enumerate() {
         let context = format!("{name} frame {index}");
         let detections: Vec<Detection> = frame
@@ -207,7 +209,7 @@ fn every_fixture_replays_identically() {
     let frames: usize = manifest
         .tracker_sequences
         .iter()
-        .map(|name| replay(name))
+        .map(|name| replay(name, &manifest.mobile_labels))
         .sum();
     assert!(frames >= 180, "only {frames} frames were replayed");
 }

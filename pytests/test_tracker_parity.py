@@ -11,7 +11,9 @@ import screentrack
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 ABSOLUTE_TOLERANCE = 1e-9
-SEQUENCES = json.loads((FIXTURES / "manifest.json").read_text())["tracker_sequences"]
+MANIFEST = json.loads((FIXTURES / "manifest.json").read_text())
+SEQUENCES = MANIFEST["tracker_sequences"]
+UNITS = frozenset(MANIFEST["mobile_labels"])
 
 
 def _motion(motion: dict) -> Any:
@@ -54,6 +56,6 @@ def _replay_frame(tracker: screentrack.Tracker, frame: dict) -> None:
 @pytest.mark.parametrize("name", SEQUENCES)
 def test_fixture_replays_identically(name: str) -> None:
     sequence = json.loads((FIXTURES / "tracker" / f"{name}.json").read_text())
-    tracker = screentrack.Tracker(screentrack.Config.aoe2())
+    tracker = screentrack.Tracker(screentrack.Config.aoe2(), UNITS)
     for frame in sequence["frames"]:
         _replay_frame(tracker, frame)

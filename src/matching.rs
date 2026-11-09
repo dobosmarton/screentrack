@@ -69,6 +69,35 @@ pub(crate) fn find_ambiguous(
     ambiguity
 }
 
+/// Also excludes identities whose cheapest pair was refused because the other side is
+/// ambiguous. They sit the frame out: falling back to a second choice handed a farm's ID
+/// to the farm next to it when its own box was contested by a duplicate track.
+pub(crate) fn with_refused_first_choices(
+    candidates: &[Candidate],
+    ambiguity: &Ambiguity,
+) -> Ambiguity {
+    let mut excluded = Ambiguity {
+        tracks: ambiguity.tracks.clone(),
+        detections: ambiguity.detections.clone(),
+    };
+    let mut track_seen = vec![false; ambiguity.tracks.len()];
+    let mut detection_seen = vec![false; ambiguity.detections.len()];
+    for candidate in candidates {
+        let Candidate {
+            track, detection, ..
+        } = *candidate;
+        if !track_seen[track] {
+            track_seen[track] = true;
+            excluded.tracks[track] |= ambiguity.detections[detection];
+        }
+        if !detection_seen[detection] {
+            detection_seen[detection] = true;
+            excluded.detections[detection] |= ambiguity.tracks[track];
+        }
+    }
+    excluded
+}
+
 /// Matches cheapest-first, skipping ambiguous and already used identities.
 pub(crate) fn greedy_matches(candidates: &[Candidate], ambiguity: &Ambiguity) -> Matches {
     let mut matches = Matches {
@@ -190,6 +219,38 @@ mod tests {
         let matches = greedy_matches(&candidates, &ambiguity);
         assert_eq!(matches.by_detection, [None, None, None]);
         assert_eq!(matches.used_tracks, [false, false, false]);
+    }
+
+    #[test]
+    fn a_refused_first_choice_never_falls_back_to_the_second() {
+        // Track 0's best box (detection 0) is contested by track 1, so track 0 must not
+        // take detection 1, its second choice.
+        let candidates = sorted(&[(0.29, 0, 0), (0.36, 1, 0), (0.86, 0, 1)]);
+        let ambiguity = find_ambiguous(&candidates, MARGIN, 2, 2);
+        assert_eq!(indices(&ambiguity.detections), [0]);
+        let excluded = with_refused_first_choices(&candidates, &ambiguity);
+        assert_eq!(indices(&excluded.tracks), [0, 1]);
+        let matches = greedy_matches(&candidates, &excluded);
+        assert_eq!(matches.by_detection, [None, None]);
+    }
+
+    #[test]
+    fn a_detection_whose_best_track_is_contested_sits_out() {
+        let candidates = sorted(&[(0.1, 0, 0), (0.2, 0, 1), (0.5, 1, 1)]);
+        let ambiguity = find_ambiguous(&candidates, MARGIN, 2, 2);
+        assert_eq!(indices(&ambiguity.tracks), [0]);
+        let excluded = with_refused_first_choices(&candidates, &ambiguity);
+        assert_eq!(indices(&excluded.detections), [0, 1]);
+    }
+
+    #[test]
+    fn clear_first_choices_are_untouched() {
+        let candidates = sorted(&[(0.1, 0, 0), (0.5, 0, 1), (0.9, 1, 0), (1.3, 1, 1)]);
+        let ambiguity = find_ambiguous(&candidates, MARGIN, 2, 2);
+        assert_eq!(
+            with_refused_first_choices(&candidates, &ambiguity),
+            ambiguity
+        );
     }
 
     proptest! {

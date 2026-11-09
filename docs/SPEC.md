@@ -33,11 +33,11 @@ The detector returns independent boxes per frame. The tracker links them across 
 
 1. **Appearance.** For each box it computes a 6-number signature: the per-channel RGB mean and standard deviation of the crop, scaled to [0, 1].
 2. **Ordering guard.** It ignores any result that is not newer than the last one by both `capture_id` and `captured_at`.
-3. **Reset.** It drops all history on a camera reset, or when more than `history` seconds have passed since the last frame.
-4. **Motion compensation.** It shifts surviving tracks by the camera pan `(dx, dy)` and drops tracks older than `history`.
-5. **Candidate generation.** It keeps only plausible (track, detection) pairs, gated by distance-over-time and appearance difference. Horizontal pruning uses binary search over the sorted x-centres.
+3. **Reset.** It drops all history on a camera reset.
+4. **Motion compensation.** It shifts surviving tracks by the camera pan `(dx, dy)` and drops tracks it hasn't seen for longer than their lifetime. Units live at least `history` seconds and static objects (buildings, resources) at least `static_memory` seconds. Both stretch with slow frames.
+5. **Candidate generation.** It keeps only plausible (track, detection) pairs, gated by distance-over-time, appearance difference and box overlap. Horizontal pruning uses binary search over the sorted x-centres.
 6. **Ambiguity rejection.** A track or detection whose two cheapest candidate costs are closer than `ambiguity_margin` is never matched.
-7. **Greedy matching.** Remaining pairs are matched cheapest-first, one-to-one.
+7. **Greedy matching.** Remaining pairs are matched cheapest-first, one-to-one. An identity whose cheapest pair was refused as ambiguous sits the frame out.
 8. **Label vote.** Each track keeps its recent evidence (label, confidence, time). A confidence-weighted, time-decayed vote smooths label flicker.
 9. **Output.** Each detection gets a stable track ID, a smoothed label, the raw label and an agreement score.
 
@@ -51,18 +51,25 @@ All arithmetic uses `f64` to match Python floats.
 
 | Field | AoE2 preset | Meaning |
 |---|---|---|
-| `history_s` | 1.0 | Track lifetime without observations. Also the frame-gap reset threshold and the evidence window. |
+| `history_s` | 1.0 | Shortest lifetime of a unit's track without observations. Also the evidence window. |
+| `gap_factor` | 3.0 | Lifetimes stretch to this many frame gaps, so slow frames keep their history. |
+| `static_memory_s` | 5.0 | Shortest lifetime of a static object's track. |
 | `speed_px_per_s` | 65.0 | Allowed centre displacement per second of elapsed time. |
 | `size_factor` | 0.75 | Allowed displacement as a fraction of the track's box size. |
 | `min_size_px` | 12.0 | Floor for box size in the gate. |
 | `max_appearance_distance` | 0.55 | Euclidean signature distance above which a pair is rejected. |
 | `ambiguity_margin` | 0.15 | Cost difference below which two candidates count as a tie (strict `<`). |
-| `stale_overlap` | 0.5 | Overlap above which an unmatched track is a stale duplicate of an updated one (strict `>`). |
+| `stale_overlap` | 0.5 | Overlap above which an unmatched track is a stale duplicate of an updated one with the same label (strict `>`). |
+| `relabel_overlap` | 0.5 | Overlap a pair needs when the label changes (strict `<` rejects). |
+| `static_overlap` | 0.1 | Overlap a pair needs unless both labels are units (strict `<` rejects). |
+| `label_penalty` | 1.0 | Cost added when the label changes. |
 | `max_observations` | 3 | Evidence entries kept per track. |
 | `label_half_life_s` | 0.4 | Decay half-life for label votes. |
 | `min_label_margin` | 0.25 | Required normalized margin to switch a label. |
 
 `Config::aoe2()` returns exactly these values. `Default` is the same preset, and it is documented as such.
+
+**Unit labels.** The caller also names the labels of objects that move, such as villagers and sheep. Every other label is a static object. A track is a unit when the label of its newest evidence is a unit label. The set is not part of `Config`, because it names a game's classes; the AoE2 adapter passes its `MOBILE_CLASSES`.
 
 ### 3.2 Inputs per frame
 
@@ -89,25 +96,30 @@ The signature is computed separately from `observe`, so callers can run it off t
 Given tracks `T` (ordered), detections `D` (ordered) and time `t`:
 
 1. **Guard.** If `capture_id <= last_capture_id` or `t <= last_at`, return `None` (Python returns an empty tuple) and change no state.
-2. **Reset.** If `motion == Reset` or `t - last_at > history_s`, clear all tracks. The ID counter is **not** reset.
-3. Set `last_capture_id` and `last_at`.
-4. **Shift and expire.** Translate every track box by the pan shift (`(0, 0)` unless panning). Drop tracks with `t - last_seen_at > history_s`. Keep the order.
+2. **Reset.** If `motion == Reset`, clear all tracks. The ID counter is **not** reset. A long gap between frames does not reset.
+3. **Lifetimes,** using the previous `last_at`: `unit = max(history_s, gap_factor * (t - last_at))` and `static = max(unit, static_memory_s)`. Then set `last_capture_id` and `last_at`.
+4. **Shift and expire.** Drop tracks with `t - last_seen_at` above their lifetime: `unit` for a unit's track, `static` otherwise. Translate every remaining track box by the pan shift (`(0, 0)` unless panning). Keep the order.
 5. **Candidates.** For each track `i` (in order), with `elapsed = t - last_seen_at`:
    - `size = max(w, h, min_size_px)` of the track box;
    - `allowed = size_factor * size + speed_px_per_s * elapsed`;
    - `distance` = Euclidean distance between box centres, computed with a port of CPython's `math.hypot`; reject if `distance > allowed`;
    - `app` = Euclidean distance between signatures; reject if `app > max_appearance_distance`;
-   - `cost = distance / allowed + app`.
+   - `overlap` = intersection over union of the track box and the detection box;
+   - `previous` = the label of the track's newest evidence, and `relabelled` = whether the detection's label differs from it;
+   - reject if `relabelled` and `overlap < relabel_overlap`: a new label is the detector changing its mind about one box;
+   - reject if the track has a label, the pair is not two unit labels, and `overlap < static_overlap`: only units continue on a box they don't touch;
+   - `position = 1 - overlap` if `overlap > 0`, else `1 + distance / allowed`;
+   - `cost = position + app + (label_penalty if relabelled else 0)`, added in that order.
 
    Pruning by x-centre (`old_x ± allowed`, inclusive bounds) is an optimization only, and it keeps Python's exact bounds and order. Sort candidates lexicographically by `(cost, track_index, detection_index)`.
 6. **Ambiguity.** Walk the sorted list. The first two candidates seen for a track or detection are its cheapest. If `second - first < ambiguity_margin`, mark that track (or detection) ambiguous. Later candidates never count. Record `last_ambiguous_count` as the number of ambiguous detections.
-7. **Matching.** Walk the sorted list again. Match `(i, j)` only if neither is ambiguous and neither is already used.
+7. **Matching.** First, a track whose cheapest candidate has an ambiguous detection, or a detection whose cheapest candidate has an ambiguous track, is excluded too: it sits the frame out rather than take its second choice. Use the step 6 marks for this, not marks added by it. Then walk the sorted list again and match `(i, j)` only if neither is ambiguous or excluded, and neither is already used.
 8. **Emit, in detection order.** For each detection `j`:
    - **If matched to track `i`:** reuse that track's ID and evidence. **Otherwise:** allocate a new ID from a monotonically increasing counter, with empty evidence.
    - Append `(label, confidence, t)` to the evidence. Keep entries with `t - captured_at <= history_s`, then keep the last `max_observations`.
    - Run the label vote (§3.5) to get `(label, agreement)`.
    - The output carries `track_id`, `label`, `raw_label`, `agreement` (`None` when fewer than 2 evidence entries) and the frame's metadata.
-9. **New track list:** the tracks updated in step 8 (in detection order), followed by unmatched old tracks (in their previous order). An unmatched track is dropped if its intersection over union with any updated track exceeds `stale_overlap`. Otherwise ambiguous old tracks survive this way.
+9. **New track list:** the tracks updated in step 8 (in detection order), followed by unmatched old tracks (in their previous order). An unmatched track is dropped if its intersection over union with any updated track **with the same newest label** exceeds `stale_overlap`. Otherwise ambiguous old tracks survive this way, and so does a second label on one spot that skipped a frame.
 
 ### 3.5 Label vote
 
@@ -149,7 +161,7 @@ pub struct Tracked { pub track_id: u64, pub label: LabelId, pub raw_label: Label
 
 pub struct Tracker { /* tracks, next_id, last_capture_id, last_at, config, stats */ }
 impl Tracker {
-    pub fn new(config: Config) -> Self;
+    pub fn new(config: Config, unit_labels: impl IntoIterator<Item = LabelId>) -> Self;
     pub fn accepts(&self, capture_id: i64, captured_at: f64) -> bool;
     pub fn observe(&mut self, capture_id: i64, captured_at: f64, motion: Motion, detections: &[Detection]) -> Option<Vec<Tracked>>;
     pub fn reset(&mut self);
@@ -174,7 +186,7 @@ import screentrack
 
 sigs = screentrack.rgb_mean_std(pixels: np.ndarray[H, W, 3, uint8], boxes: np.ndarray[N, 4, float64]) -> np.ndarray[N, 6]
 
-tracker = screentrack.Tracker(screentrack.Config.aoe2())
+tracker = screentrack.Tracker(screentrack.Config.aoe2(), unit_labels)  # any iterable of str
 result = tracker.observe(
     capture_id=..., captured_at=...,
     motion=("pan", dx, dy) | "stable" | "reset",
@@ -360,4 +372,5 @@ Checked against the reference on Python 3.11.9 and NumPy 2.4.6.
 - **Reference bugs.** A negative box end wrapped through a Python slice, and an all-zero-confidence vote could raise `ZeroDivisionError`. Both were fixed in the reference (AoE2 commit `1f001c3`) to match this spec, and the fixtures come from the fixed version.
 - **Benchmark scene.** The crowded synthetic scene used 64×64 boxes reading 0.25M pixels per frame. Real frames read 2.3M at the median and up to 8.2M, so the Python cost above comes from real frames instead. 219 unique annotated frames were available.
 - **Reference ambiguity rule.** The original rule rejected an identity when any two of its candidates were close, and left stale duplicates behind. On recorded footage that rejected 97% of detections, so both changed in the reference (AoE2 commit `954f943`) and here. See §3.4 and the AoE2 repo's `docs/tracker-benchmark.md`.
+- **Static objects.** Recorded footage showed buildings and resources losing their IDs, or passing them to neighbours. The reference gained unit labels, overlap-based costs with a label penalty, overlap requirements, longer static memory, lifetimes that stretch with slow frames instead of a gap reset, same-label stale duplicates, and refused first choices sitting out. The Python tracker with these rules (blob `c712bf45`, AoE2 commit `3709f46`) passed held-out match 5 on 2026-11-09 against IoU matching, and the rules here follow it.
 - **Recorded sequences.** One match is recorded so far, from the Mac at 15 fps. See the AoE2 repo's `scripts/tracker_benchmark/recorded.py`. A VM capture is still a gate for shadow mode.

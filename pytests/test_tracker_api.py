@@ -10,10 +10,11 @@ import screentrack
 BOX = np.array([[100.0, 100.0, 120.0, 140.0]])
 SIGNATURE = np.zeros((1, 6))
 CONFIDENCE = np.array([0.8])
+UNITS = frozenset({"villager", "sheep"})
 
 
 def _tracker() -> screentrack.Tracker:
-    return screentrack.Tracker(screentrack.Config.aoe2())
+    return screentrack.Tracker(screentrack.Config.aoe2(), UNITS)
 
 
 def _observe(
@@ -170,3 +171,43 @@ def test_stats_describe_the_last_frame() -> None:
     assert tracker.ambiguous_count == 0
     assert tracker.candidate_ms >= 0.0
     assert tracker.matching_ms >= 0.0
+
+
+def test_unit_labels_must_be_a_collection_not_one_string() -> None:
+    with pytest.raises(ValueError, match="not one string"):
+        screentrack.Tracker(screentrack.Config.aoe2(), "villager")
+
+
+def test_unit_labels_must_be_strings() -> None:
+    numbers: Any = [1, 2]
+    with pytest.raises(TypeError):
+        screentrack.Tracker(screentrack.Config.aoe2(), numbers)
+
+
+def _missed_for(label: str, seconds: float) -> bool:
+    """Whether an object keeps its ID after missing `seconds` of frames at 5 Hz."""
+    tracker = _tracker()
+    first = _observe(tracker, 1, 1.0, label=label)
+    frames = round(seconds * 5)
+    for capture_id in range(2, frames + 1):
+        _observe_nothing(tracker, capture_id, 1.0 + (capture_id - 1) / 5)
+    later = _observe(tracker, frames + 1, 1.0 + seconds, label=label)
+    assert first is not None and later is not None
+    return bool(later[0][0] == first[0][0])
+
+
+def _observe_nothing(tracker: screentrack.Tracker, capture_id: int, captured_at: float) -> None:
+    tracker.observe(
+        capture_id=capture_id,
+        captured_at=captured_at,
+        motion="stable",
+        boxes=np.empty((0, 4)),
+        labels=[],
+        confidences=np.empty(0),
+        signatures=np.empty((0, 6)),
+    )
+
+
+def test_labels_outside_the_unit_set_are_remembered_longer() -> None:
+    assert _missed_for("house", 2.0)
+    assert not _missed_for("villager", 2.0)
