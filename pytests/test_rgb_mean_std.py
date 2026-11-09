@@ -61,17 +61,23 @@ def test_boxes_must_have_four_columns() -> None:
 
 
 def test_the_gil_is_released_during_extraction() -> None:
+    """Another Python thread keeps running while signatures are computed.
+
+    The other thread spins rather than sleeping. A 1 ms sleep can overshoot by several
+    milliseconds on a busy CI runner and miss the whole call, which made an earlier
+    version of this test fail at random. A spinning thread can't run at all while the
+    GIL is held, so a held GIL still fails every time.
+    """
     pixels = np.zeros((1080, 1920, 3), dtype=np.uint8)
-    boxes = np.tile(np.array([0.0, 0.0, 1920.0, 1080.0]), (12, 1))
+    boxes = np.tile(np.array([0.0, 0.0, 1920.0, 1080.0]), (24, 1))
     beats: list[float] = []
     stop = threading.Event()
 
-    def beat() -> None:
+    def spin() -> None:
         while not stop.is_set():
             beats.append(time.perf_counter())
-            time.sleep(0.001)
 
-    thread = threading.Thread(target=beat)
+    thread = threading.Thread(target=spin)
     thread.start()
     try:
         started = time.perf_counter()
@@ -80,7 +86,7 @@ def test_the_gil_is_released_during_extraction() -> None:
     finally:
         stop.set()
         thread.join()
-    # A held GIL blocks the other thread for the whole call, so only the middle of the
-    # call proves anything: a thread waiting at either end would run around it anyway.
+    # A thread waiting at either end of the call would run around it anyway, so only the
+    # middle of the call proves anything.
     margin = (finished - started) / 4
     assert any(started + margin < beat_at < finished - margin for beat_at in beats)
